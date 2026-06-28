@@ -84,6 +84,7 @@ const createInvoice = async (req, res, next) => {
         itemCode: item.itemCode,
         itemName: item.name,
         hsnCode: entry.hsnCode || item.hsnCode || '711319',
+        metal: item.metal || 'gold',
         purity: item.purity,
         grossWeight: item.grossWeight,
         netWeight: item.netWeight,
@@ -112,6 +113,8 @@ const createInvoice = async (req, res, next) => {
 
       oldGoldValue = ogCalc.taxableValue ?? ogCalc.buybackValue
       oldGoldData = {
+        oldGoldGrossWeight: oldGold.grossWeight || 0,
+        oldGoldDustWeight: oldGold.dustWeight || 0,
         oldGoldWeight: oldGold.weight,
         oldGoldPurity: oldGold.purity,
         oldGoldRate: ogCalc.ratePerGram ?? 0,
@@ -124,16 +127,16 @@ const createInvoice = async (req, res, next) => {
       }
     }
 
-    const taxableAmount = Math.max(0, subTotal - discount - oldGoldValue)
+    const taxableAmount = Math.max(0, subTotal - oldGoldValue)
     const gstRate = 3
     const gstAmount = parseFloat(((taxableAmount * gstRate) / 100).toFixed(2))
-    const totalAmount = parseFloat((taxableAmount + gstAmount).toFixed(2))
+    const totalAmount = Math.max(0, parseFloat((taxableAmount + gstAmount - discount).toFixed(2)))
     const amountPaid = payments ? payments.reduce((sum, p) => sum + p.amount, 0) : 0
     const balanceDue = parseFloat((totalAmount - amountPaid).toFixed(2))
 
     const invoicePanNumber = customer?.panNumber || (panNumber ? String(panNumber).trim().toUpperCase() : '')
-    if (totalAmount > 50000 && !invoicePanNumber) {
-      return sendError(res, 400, 'PAN card number is mandatory for transactions above ₹50,000')
+    if (totalAmount > 199999 && !invoicePanNumber) {
+      return sendError(res, 400, 'PAN card number is mandatory for transactions above ₹1,99,999')
     }
 
     const invoice = await SalesInvoice.create({
@@ -155,6 +158,23 @@ const createInvoice = async (req, res, next) => {
       notes,
       createdBy: req.user._id,
     })
+
+    if (customerOrderRef) {
+      const CustomerOrder = require('../models/CustomerOrder')
+      const order = await CustomerOrder.findById(customerOrderRef)
+      if (order) {
+        order.salesInvoice = invoice._id
+        order.status = 'delivered'
+        order.actualDelivery = new Date()
+        order.finalAmount = totalAmount
+        order.statusHistory.push({
+          status: 'delivered',
+          changedBy: req.user._id,
+          note: `Invoice ${invoice.invoiceNumber} created`
+        })
+        await order.save()
+      }
+    }
 
     // Auto journal entry
     await JournalEntry.create({

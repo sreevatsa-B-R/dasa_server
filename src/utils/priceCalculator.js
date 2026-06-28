@@ -66,9 +66,12 @@ const calculateOldGoldValue = (weight, purity, goldRates, deductionPct = 0) => {
     '14K': goldRates.rate14K,
     '22K': goldRates.rate22K,
     '24K': goldRates.rate24K,
+    'Silver': goldRates.rateSilver || 0,
+    '92.5': goldRates.rateSilver ? Math.round(goldRates.rateSilver * 0.925) : 0,
+    '99.9': goldRates.rateSilver ? Math.round(goldRates.rateSilver * 0.999) : 0,
   }
   const ratePerGram = rateMap[purity]
-  if (!ratePerGram) throw new Error(`Invalid purity: ${purity}`)
+  if (ratePerGram === undefined) throw new Error(`Invalid purity: ${purity}`)
 
   const grossValue = weight * ratePerGram
   const deduction = (grossValue * deductionPct) / 100

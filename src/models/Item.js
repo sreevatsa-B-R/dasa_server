@@ -21,6 +21,11 @@ const itemSchema = new mongoose.Schema({
     type: String,
     trim: true,
   },
+  metal: {
+    type: String,
+    enum: ['gold', 'silver'],
+    default: 'gold',
+  },
   purity: {
     type: String,
     enum: KARAT_TYPES,
@@ -92,6 +97,10 @@ const itemSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'PurchaseOrder',
   },
+  customerOrderRef: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'CustomerOrder',
+  },
   addedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -107,6 +116,9 @@ itemSchema.pre('save', async function () {
   if (!this.itemCode) {
     const count = await mongoose.model('Item').countDocuments()
     this.itemCode = `ITM${String(count + 1).padStart(5, '0')}`
+  }
+  if (!this.barcode) {
+    this.barcode = this.itemCode
   }
 })
 

@@ -29,6 +29,7 @@ const customerOrderSchema = new mongoose.Schema({
   // Order details
   itemDescription:  { type: String, required: true, trim: true },
   category:         { type: String },
+  metal:            { type: String, enum: ['gold', 'silver'], default: 'gold' },
   purity:           { type: String, enum: KARAT_TYPES },
   estimatedWeight:  { type: Number },   // in grams
   agreedGoldRate:   { type: Number },   // gold rate locked at order time
@@ -68,6 +69,7 @@ const customerOrderSchema = new mongoose.Schema({
 
   // Linked invoice on delivery
   salesInvoice: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesInvoice' },
+  inventoryItemRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
 
   notes: { type: String, trim: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

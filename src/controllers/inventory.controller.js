@@ -250,6 +250,10 @@ const generateTag = async (req, res, next) => {
       grossWeight: item.grossWeight,
       netWeight: item.netWeight,
       huidNumber: item.huidNumber || '',
+      stoneCharge: item.stoneCharge || 0,
+      makingCharge: item.makingCharge || 0,
+      makingChargeFixed: item.makingChargeFixed || 0,
+      wastage: item.wastage || 0,
     }
 
     sendResponse(res, 200, tagData, 'Tag data ready for printing')

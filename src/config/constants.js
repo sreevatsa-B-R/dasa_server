@@ -1,4 +1,4 @@
-const KARAT_TYPES = ['18K', '14K', '22K', '24K']
+const KARAT_TYPES = ['18K', '14K', '22K', '24K', '92.5', '99.9', 'Silver']
 
 const ITEM_CATEGORIES = [
   'Ring', 'Necklace', 'Bangle', 'Bracelet', 'Earring',

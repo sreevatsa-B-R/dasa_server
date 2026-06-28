@@ -7,7 +7,7 @@ const todayStr = () => new Date().toISOString().split('T')[0]
 // @route POST /api/v1/gold-rates
 const setGoldRate = async (req, res, next) => {
   try {
-    const { rate18K, rate14K, rate22K, rate24K } = req.body
+    const { rate18K, rate14K, rate22K, rate24K, rateSilver } = req.body
 
     if (!rate18K || !rate14K || !rate22K || !rate24K) {
       return sendError(res, 400, 'All four karat rates are required')
@@ -16,7 +16,7 @@ const setGoldRate = async (req, res, next) => {
     const date = todayStr()
     const goldRate = await GoldRate.findOneAndUpdate(
       { date },
-      { rate18K, rate14K, rate22K, rate24K, enteredBy: req.user._id },
+      { rate18K, rate14K, rate22K, rate24K, rateSilver: rateSilver || 0, enteredBy: req.user._id },
       { upsert: true, new: true }
     )
 

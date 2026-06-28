@@ -64,6 +64,7 @@ const getCustomerOrders = async (req, res, next) => {
     const orders = await CustomerOrder.find(filter)
       .populate('customer', 'name phone')
       .populate('assignedArtisan', 'name phone')
+      .populate('inventoryItemRef')
       .sort({ expectedDelivery: 1 })
       .skip((page - 1) * limit)
       .limit(Number(limit))
@@ -82,6 +83,7 @@ const getCustomerOrderById = async (req, res, next) => {
       .populate('customer', 'name phone address panNumber aadharNumber')
       .populate('assignedArtisan', 'name phone')
       .populate('createdBy', 'name')
+      .populate('inventoryItemRef')
     if (!order) return sendError(res, 404, 'Order not found')
     sendResponse(res, 200, order)
   } catch (err) {
@@ -93,8 +95,41 @@ const getCustomerOrderById = async (req, res, next) => {
 // @route PUT /api/v1/orders/customer/:id
 const updateCustomerOrder = async (req, res, next) => {
   try {
+    const oldOrder = await CustomerOrder.findById(req.params.id)
+    if (!oldOrder) return sendError(res, 404, 'Order not found')
+
     const order = await CustomerOrder.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true })
     if (!order) return sendError(res, 404, 'Order not found')
+
+    if (order.status === ORDER_STATUS.READY && (!oldOrder.inventoryItemRef && !order.inventoryItemRef)) {
+      const Item = require('../models/Item')
+      
+      const payload = {
+        name: order.itemDescription,
+        category: order.category || 'Other',
+        metal: order.metal || 'gold',
+        purity: order.purity || '22K',
+        grossWeight: order.actualWeight || order.estimatedWeight || 0,
+        netWeight: order.actualWeight || order.estimatedWeight || 0,
+        stoneWeight: 0,
+        makingCharge: order.makingCharge || 0,
+        makingChargeFixed: 0,
+        stoneCharge: order.stoneCharge || 0,
+        wastage: order.wastageWeight || 0,
+        description: `Created from Order ${order.orderNumber}`,
+        addedBy: req.user._id,
+        customerOrderRef: order._id,
+      }
+      
+      const item = await Item.create(payload)
+      order.inventoryItemRef = item._id
+      await order.save()
+    }
+
+    if (order.inventoryItemRef) {
+      await order.populate('inventoryItemRef')
+    }
+
     sendResponse(res, 200, order, 'Order updated')
   } catch (err) {
     next(err)
@@ -214,6 +249,7 @@ const getReadyOrders = async (req, res, next) => {
   try {
     const orders = await CustomerOrder.find({ status: ORDER_STATUS.READY })
       .populate('customer', 'name phone')
+      .populate('inventoryItemRef')
       .sort({ expectedDelivery: 1 })
 
     sendResponse(res, 200, orders)

@@ -6,6 +6,7 @@ const invoiceItemSchema = new mongoose.Schema({
   itemCode: String,
   itemName: String,
   hsnCode: String,
+  metal: { type: String, enum: ['gold', 'silver'], default: 'gold' },
   purity: String,
   grossWeight: Number,
   netWeight: Number,
@@ -42,6 +43,8 @@ const salesInvoiceSchema = new mongoose.Schema({
   items: [invoiceItemSchema],
 
   // Old gold exchange
+  oldGoldGrossWeight: { type: Number, default: 0 },
+  oldGoldDustWeight: { type: Number, default: 0 },
   oldGoldWeight: { type: Number, default: 0 },
   oldGoldPurity: { type: String },
   oldGoldRate:   { type: Number, default: 0 },

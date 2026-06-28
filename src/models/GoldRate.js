@@ -10,6 +10,7 @@ const goldRateSchema = new mongoose.Schema({
   rate14K: { type: Number, required: true },
   rate22K: { type: Number, required: true },
   rate24K: { type: Number, required: true },
+  rateSilver: { type: Number, default: 0 },
   enteredBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -19,6 +20,9 @@ const goldRateSchema = new mongoose.Schema({
 
 // Helper: get rate for a specific karat
 goldRateSchema.methods.getRateForKarat = function (karat) {
+  if (karat === 'Silver') return this.rateSilver || null
+  if (karat === '92.5') return Math.round((this.rateSilver || 0) * 0.925)
+  if (karat === '99.9') return Math.round((this.rateSilver || 0) * 0.999)
   const map = { '18K': this.rate18K, '14K': this.rate14K, '22K': this.rate22K, '24K': this.rate24K }
   return map[karat] || null
 }
