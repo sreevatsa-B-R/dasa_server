@@ -10,6 +10,18 @@ const { sendResponse, sendError } = require('../utils/response')
 router.post('/', protect, isAdminOrManager, async (req, res, next) => {
   try {
     const artisan = await Artisan.create({ ...req.body, addedBy: req.user._id })
+    try {
+      const Supplier = require('../models/Supplier')
+      await Supplier.create({
+        name: req.body.name,
+        phone: req.body.phone,
+        address: req.body.address || '',
+        contactPerson: req.body.name,
+        gstNumber: '',
+        paymentTerms: '',
+        addedBy: req.user._id
+      })
+    } catch (e) {}
     sendResponse(res, 201, artisan, 'Artisan registered')
   } catch (err) { next(err) }
 })

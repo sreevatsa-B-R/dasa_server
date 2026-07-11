@@ -24,8 +24,21 @@ const purchaseOrderSchema = new mongoose.Schema({
   artisan:  { type: mongoose.Schema.Types.ObjectId, ref: 'Artisan' },
 
   // What was ordered
-  itemDescription:  { type: String, required: true, trim: true },
+  itemDescription:  { type: String, required: false, trim: true },
+  metalType:        { type: String, enum: ['gold', 'silver', 'platinum', 'other'], default: 'gold' },
   purity:           { type: String, enum: KARAT_TYPES },
+  productName:      { type: String, trim: true },
+  stoneType:        { type: String, trim: true },
+  hsnCode:          { type: String, trim: true },
+  rate:             { type: Number, default: 0 },
+  grossWeight:      { type: Number, default: 0 },
+  stoneWeight:      { type: Number, default: 0 },
+  netWeight:        { type: Number, default: 0 },
+  wastage:          { type: Number, default: 0 },
+  makingCharges:    { type: Number, default: 0 },
+  amount:           { type: Number, default: 0 },
+  payMode:          { type: String, enum: PAYMENT_MODES },
+  totalAmount:      { type: Number, default: 0 },
   orderedWeight:    { type: Number },
   agreedRatePerGram:{ type: Number },
   estimatedAmount:  { type: Number },
@@ -70,6 +83,9 @@ const purchaseOrderSchema = new mongoose.Schema({
 
 // Auto-generate PO number
 purchaseOrderSchema.pre('save', function (next) {
+  if (!this.itemDescription) {
+    this.itemDescription = this.productName || 'Purchase Order'
+  }
   if (!this.poNumber) {
     const self = this
     return mongoose.model('PurchaseOrder').countDocuments().then(count => {

@@ -10,6 +10,17 @@ const { sendResponse, sendError } = require('../utils/response')
 const createSupplier = async (req, res, next) => {
   try {
     const supplier = await Supplier.create({ ...req.body, addedBy: req.user._id })
+    try {
+      const Artisan = require('../models/Artisan')
+      await Artisan.create({
+        name: req.body.name,
+        phone: req.body.phone,
+        address: req.body.address || '',
+        speciality: [],
+        allowedWastagePct: 2,
+        addedBy: req.user._id
+      })
+    } catch (e) {}
     sendResponse(res, 201, supplier, 'Supplier created')
   } catch (err) { next(err) }
 }
@@ -64,12 +75,18 @@ const getPurchaseOrders = async (req, res, next) => {
   try {
     const { supplierId, status, page = 1, limit = 20 } = req.query
     const filter = { orderType: 'supplier' }
-    if (supplierId) filter.supplier = supplierId
+    if (supplierId) {
+      filter.$or = [
+        { supplier: supplierId },
+        { artisan: supplierId }
+      ]
+    }
     if (status)     filter.status = status
 
     const total = await PurchaseOrder.countDocuments(filter)
     const orders = await PurchaseOrder.find(filter)
       .populate('supplier', 'name phone')
+      .populate('artisan', 'name phone')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(Number(limit))
@@ -80,7 +97,9 @@ const getPurchaseOrders = async (req, res, next) => {
 
 const getPurchaseOrderById = async (req, res, next) => {
   try {
-    const order = await PurchaseOrder.findById(req.params.id).populate('supplier')
+    const order = await PurchaseOrder.findById(req.params.id)
+      .populate('supplier')
+      .populate('artisan')
     if (!order) return sendError(res, 404, 'Purchase order not found')
     sendResponse(res, 200, order)
   } catch (err) { next(err) }
