@@ -2,6 +2,12 @@ const mongoose = require('mongoose')
 const { ITEM_CATEGORIES, KARAT_TYPES, ITEM_STATUS } = require('../config/constants')
 
 const itemSchema = new mongoose.Schema({
+  storeId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  },
   itemCode: {
     type: String,
     unique: true,

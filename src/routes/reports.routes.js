@@ -37,7 +37,7 @@ router.get('/dashboard', protect, isAdminOrManager, async (req, res, next) => {
         status: { $nin: [ORDER_STATUS.DELIVERED, ORDER_STATUS.CANCELLED] },
       }),
       CustomerOrder.countDocuments({ status: ORDER_STATUS.READY }),
-      Item.countDocuments({ status: ITEM_STATUS.IN_STOCK, isDeleted: false }),
+      Item.countDocuments({ storeId: req.user._id, status: ITEM_STATUS.IN_STOCK, isDeleted: false }),
     ])
 
     sendResponse(res, 200, {
@@ -94,7 +94,7 @@ router.get('/sales', protect, isAdminOrManager, async (req, res, next) => {
 router.get('/stock-valuation', protect, isAdminOrManager, async (req, res, next) => {
   try {
     const goldRate = await GoldRate.getTodayRateWithFallback()
-    const items = await Item.find({ status: ITEM_STATUS.IN_STOCK, isDeleted: false })
+    const items = await Item.find({ storeId: req.user._id, status: ITEM_STATUS.IN_STOCK, isDeleted: false })
 
     let totalValue = 0
     const valued = items.map(item => {

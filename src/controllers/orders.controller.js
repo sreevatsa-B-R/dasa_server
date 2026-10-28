@@ -1,9 +1,11 @@
 const CustomerOrder = require('../models/CustomerOrder')
 const Artisan = require('../models/Artisan')
 const SalesInvoice = require('../models/SalesInvoice')
+const Item = require('../models/Item')
 const { ORDER_STATUS } = require('../config/constants')
 const { calculateWastage } = require('../utils/priceCalculator')
 const { sendResponse, sendError } = require('../utils/response')
+const { itemStoreFilter } = require('../utils/itemStoreScope')
 
 const addStatusHistory = (order, status, userId, note = '') => {
   order.status = status
@@ -64,7 +66,7 @@ const getCustomerOrders = async (req, res, next) => {
     const orders = await CustomerOrder.find(filter)
       .populate('customer', 'name phone')
       .populate('assignedArtisan', 'name phone')
-      .populate('inventoryItemRef')
+      .populate({ path: 'inventoryItemRef', match: { storeId: req.user._id } })
       .sort({ expectedDelivery: 1 })
       .skip((page - 1) * limit)
       .limit(Number(limit))
@@ -83,7 +85,7 @@ const getCustomerOrderById = async (req, res, next) => {
       .populate('customer', 'name phone address panNumber aadharNumber')
       .populate('assignedArtisan', 'name phone')
       .populate('createdBy', 'name')
-      .populate('inventoryItemRef')
+      .populate({ path: 'inventoryItemRef', match: { storeId: req.user._id } })
     if (!order) return sendError(res, 404, 'Order not found')
     sendResponse(res, 200, order)
   } catch (err) {
@@ -98,12 +100,16 @@ const updateCustomerOrder = async (req, res, next) => {
     const oldOrder = await CustomerOrder.findById(req.params.id)
     if (!oldOrder) return sendError(res, 404, 'Order not found')
 
-    const order = await CustomerOrder.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true })
+    const updates = { ...req.body }
+    if (updates.inventoryItemRef) {
+      const item = await Item.findOne(itemStoreFilter(req.user._id, { _id: updates.inventoryItemRef }))
+      if (!item) return sendError(res, 404, 'Inventory item not found')
+    }
+
+    const order = await CustomerOrder.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true })
     if (!order) return sendError(res, 404, 'Order not found')
 
     if (order.status === ORDER_STATUS.READY && (!oldOrder.inventoryItemRef && !order.inventoryItemRef)) {
-      const Item = require('../models/Item')
-      
       const payload = {
         name: order.itemDescription,
         category: order.category || 'Other',
@@ -117,6 +123,7 @@ const updateCustomerOrder = async (req, res, next) => {
         stoneCharge: order.stoneCharge || 0,
         wastage: order.wastageWeight || 0,
         description: `Created from Order ${order.orderNumber}`,
+        storeId: req.user._id,
         addedBy: req.user._id,
         customerOrderRef: order._id,
       }
@@ -127,7 +134,7 @@ const updateCustomerOrder = async (req, res, next) => {
     }
 
     if (order.inventoryItemRef) {
-      await order.populate('inventoryItemRef')
+      await order.populate({ path: 'inventoryItemRef', match: { storeId: req.user._id } })
     }
 
     sendResponse(res, 200, order, 'Order updated')
@@ -208,15 +215,30 @@ const deliverOrder = async (req, res, next) => {
       return sendError(res, 400, 'Order is not ready for delivery')
     }
 
-    order.finalAmount = finalAmount
+    const finalAmountNumber = Number(finalAmount)
+    if (!Number.isFinite(finalAmountNumber) || finalAmountNumber < 0) {
+      return sendError(res, 400, 'Final amount must be a valid non-negative number')
+    }
+
+    const currentAdvance = Number(order.totalAdvancePaid) || 0
+    const remainingBeforePayment = Math.max(0, finalAmountNumber - currentAdvance)
+    const balancePaymentAmount = balancePayment ? Number(balancePayment.amount) : 0
+    if (!Number.isFinite(balancePaymentAmount) || balancePaymentAmount < 0) {
+      return sendError(res, 400, 'Balance payment must be a valid non-negative number')
+    }
+    if (balancePaymentAmount > remainingBeforePayment) {
+      return sendError(res, 400, 'Balance payment exceeds the amount due')
+    }
+
+    order.finalAmount = finalAmountNumber
     order.actualDelivery = new Date()
     addStatusHistory(order, ORDER_STATUS.DELIVERED, req.user._id, 'Delivered to customer')
 
-    if (balancePayment) {
-      order.advancePayments.push({ ...balancePayment, receivedBy: req.user._id })
-      order.totalAdvancePaid += balancePayment.amount
+    if (balancePayment && balancePaymentAmount > 0) {
+      order.advancePayments.push({ ...balancePayment, amount: balancePaymentAmount, receivedBy: req.user._id })
+      order.totalAdvancePaid = currentAdvance + balancePaymentAmount
     }
-    order.balanceDue = 0
+    order.balanceDue = Math.max(0, finalAmountNumber - (Number(order.totalAdvancePaid) || 0))
 
     await order.save()
     sendResponse(res, 200, order, 'Order delivered successfully')
@@ -249,7 +271,7 @@ const getReadyOrders = async (req, res, next) => {
   try {
     const orders = await CustomerOrder.find({ status: ORDER_STATUS.READY })
       .populate('customer', 'name phone')
-      .populate('inventoryItemRef')
+      .populate({ path: 'inventoryItemRef', match: { storeId: req.user._id } })
       .sort({ expectedDelivery: 1 })
 
     sendResponse(res, 200, orders)

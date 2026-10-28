@@ -7,12 +7,16 @@ const { ITEM_STATUS, JOURNAL_TYPES } = require('../config/constants')
 const { calculateItemPrice, calculateOldGoldValue, calculateManualOldGoldValue } = require('../utils/priceCalculator')
 const { generateInvoiceFile } = require('../utils/invoicePdf')
 const { sendResponse, sendError } = require('../utils/response')
+const { calculateReturnTotals } = require('../utils/returnTotals')
+const { itemStoreFilter } = require('../utils/itemStoreScope')
 
 const todayStr = () => new Date().toISOString().split('T')[0]
 
 // @desc  Create sales invoice
 // @route POST /api/v1/sales/invoices
 const createInvoice = async (req, res, next) => {
+  const reservedItemIds = []
+  let invoiceCreated = false
   try {
     const { customerId, customerName, customerPhone, aadharNumber, panNumber, items, payments, discount = 0, oldGold, notes, customerOrderRef } = req.body
 
@@ -63,7 +67,7 @@ const createInvoice = async (req, res, next) => {
     let subTotal = 0
 
     for (const entry of items) {
-      const item = await Item.findById(entry.itemId)
+      const item = await Item.findOne(itemStoreFilter(req.user._id, { _id: entry.itemId }))
       if (!item || item.isDeleted) return sendError(res, 404, `Item ${entry.itemId} not found`)
       if (item.status !== ITEM_STATUS.IN_STOCK) return sendError(res, 400, `Item ${item.name} is not available for sale`)
 
@@ -99,8 +103,6 @@ const createInvoice = async (req, res, next) => {
 
       subTotal += price.subTotal
 
-      // Mark item as sold
-      await Item.findByIdAndUpdate(item._id, { status: ITEM_STATUS.SOLD })
     }
 
     // Old gold deduction
@@ -139,6 +141,27 @@ const createInvoice = async (req, res, next) => {
       return sendError(res, 400, 'PAN card number is mandatory for transactions above ₹1,99,999')
     }
 
+    for (const invoiceItem of invoiceItems) {
+      const reservedItem = await Item.findOneAndUpdate(
+        itemStoreFilter(req.user._id, {
+          _id: invoiceItem.item,
+          status: ITEM_STATUS.IN_STOCK,
+          isDeleted: false,
+        }),
+        { status: ITEM_STATUS.SOLD },
+        { new: true }
+      )
+      if (!reservedItem) {
+        await Item.updateMany(
+          itemStoreFilter(req.user._id, { _id: { $in: reservedItemIds }, status: ITEM_STATUS.SOLD }),
+          { status: ITEM_STATUS.IN_STOCK }
+        )
+        reservedItemIds.length = 0
+        return sendError(res, 409, 'An item in this sale is no longer available')
+      }
+      reservedItemIds.push(reservedItem._id)
+    }
+
     const invoice = await SalesInvoice.create({
       customer: customer ? customer._id : undefined,
       customerAadharNumber: aadharNumber ? String(aadharNumber).trim() : undefined,
@@ -158,6 +181,7 @@ const createInvoice = async (req, res, next) => {
       notes,
       createdBy: req.user._id,
     })
+    invoiceCreated = true
 
     if (customerOrderRef) {
       const CustomerOrder = require('../models/CustomerOrder')
@@ -196,6 +220,12 @@ const createInvoice = async (req, res, next) => {
 
     sendResponse(res, 201, invoice, 'Invoice created successfully')
   } catch (err) {
+    if (!invoiceCreated && reservedItemIds.length > 0) {
+      await Item.updateMany(
+        itemStoreFilter(req.user._id, { _id: { $in: reservedItemIds }, status: ITEM_STATUS.SOLD }),
+        { status: ITEM_STATUS.IN_STOCK }
+      )
+    }
     next(err)
   }
 }
@@ -205,7 +235,7 @@ const createInvoice = async (req, res, next) => {
 const getInvoices = async (req, res, next) => {
   try {
     const { from, to, customerId, page = 1, limit = 20 } = req.query
-    const filter = { isReturn: false }
+    const filter = { createdBy: req.user._id, isReturn: false }
 
     if (customerId) filter.customer = customerId
     if (from || to) {
@@ -231,7 +261,7 @@ const getInvoices = async (req, res, next) => {
 // @route GET /api/v1/sales/invoices/:id
 const getInvoiceById = async (req, res, next) => {
   try {
-    const invoice = await SalesInvoice.findById(req.params.id)
+    const invoice = await SalesInvoice.findOne({ _id: req.params.id, createdBy: req.user._id })
       .populate('customer', 'name phone address')
       .populate('createdBy', 'name')
     if (!invoice) return sendError(res, 404, 'Invoice not found')
@@ -246,25 +276,80 @@ const getInvoiceById = async (req, res, next) => {
 const processReturn = async (req, res, next) => {
   try {
     const { reason, itemIds } = req.body
-    const original = await SalesInvoice.findById(req.params.id)
+    const original = await SalesInvoice.findOne({
+      _id: req.params.id,
+      createdBy: req.user._id,
+      isReturn: false,
+    })
     if (!original) return sendError(res, 404, 'Invoice not found')
-
-    // Return items to in_stock
-    for (const itemId of itemIds) {
-      await Item.findByIdAndUpdate(itemId, { status: ITEM_STATUS.IN_STOCK })
+    if (original.isReturn) return sendError(res, 400, 'A return invoice cannot be returned')
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      return sendError(res, 400, 'Select at least one item to return')
     }
 
-    const returnInvoice = await SalesInvoice.create({
-      customer: original.customer,
-      items: original.items.filter(i => itemIds.includes(i.item.toString())),
-      totalAmount: -original.totalAmount,
-      amountPaid: -original.amountPaid,
-      balanceDue: 0,
-      isReturn: true,
+    const requestedIds = itemIds.map(String)
+    if (new Set(requestedIds).size !== requestedIds.length) {
+      return sendError(res, 400, 'Duplicate items are not allowed in a return')
+    }
+
+    const previouslyReturned = await SalesInvoice.find({
       returnOf: original._id,
-      notes: reason,
-      createdBy: req.user._id,
-    })
+      isReturn: true,
+    }).select('items.item')
+    const returnedIds = new Set(previouslyReturned.flatMap(invoice => invoice.items.map(item => item.item.toString())))
+    const originalItems = new Map(original.items.map(item => [item.item.toString(), item]))
+    const selectedItems = []
+    for (const itemId of requestedIds) {
+      const invoiceItem = originalItems.get(itemId)
+      if (!invoiceItem) return sendError(res, 400, 'Return contains an item not on the original invoice')
+      if (returnedIds.has(itemId)) return sendError(res, 400, 'An item from this invoice has already been returned')
+      selectedItems.push(invoiceItem)
+    }
+
+    const itemSubtotal = selectedItems.reduce((sum, item) => sum + (item.subTotal || 0), 0)
+    const returnTotals = calculateReturnTotals(original, itemSubtotal)
+    const reservedItemIds = []
+
+    for (const itemId of requestedIds) {
+      const returnedItem = await Item.findOneAndUpdate(
+        itemStoreFilter(req.user._id, {
+          _id: itemId,
+          status: ITEM_STATUS.SOLD,
+          isDeleted: false,
+        }),
+        { status: ITEM_STATUS.IN_STOCK },
+        { new: true }
+      )
+      if (!returnedItem) {
+        await Item.updateMany(
+          itemStoreFilter(req.user._id, { _id: { $in: reservedItemIds }, status: ITEM_STATUS.IN_STOCK }),
+          { status: ITEM_STATUS.SOLD }
+        )
+        return sendError(res, 409, 'An item is no longer available for return')
+      }
+      reservedItemIds.push(returnedItem._id)
+    }
+
+    let returnInvoice
+    try {
+      returnInvoice = await SalesInvoice.create({
+        customer: original.customer,
+        items: selectedItems,
+        ...returnTotals,
+        gstRate: original.gstRate,
+        balanceDue: 0,
+        isReturn: true,
+        returnOf: original._id,
+        notes: reason,
+        createdBy: req.user._id,
+      })
+    } catch (err) {
+      await Item.updateMany(
+        itemStoreFilter(req.user._id, { _id: { $in: reservedItemIds }, status: ITEM_STATUS.IN_STOCK }),
+        { status: ITEM_STATUS.SOLD }
+      )
+      throw err
+    }
 
     sendResponse(res, 201, returnInvoice, 'Return processed successfully')
   } catch (err) {
@@ -276,7 +361,7 @@ const processReturn = async (req, res, next) => {
 // @route GET /api/v1/sales/invoices/:id/receipt
 const getReceipt = async (req, res, next) => {
   try {
-    const invoice = await SalesInvoice.findById(req.params.id)
+    const invoice = await SalesInvoice.findOne({ _id: req.params.id, createdBy: req.user._id })
       .populate('customer', 'name phone address')
     if (!invoice) return sendError(res, 404, 'Invoice not found')
     // Returns full invoice — frontend formats for print/SMS
@@ -290,7 +375,7 @@ const getReceipt = async (req, res, next) => {
 // @route GET /api/v1/sales/invoices/:id/pdf
 const getInvoicePdf = async (req, res, next) => {
   try {
-    const invoice = await SalesInvoice.findById(req.params.id)
+    const invoice = await SalesInvoice.findOne({ _id: req.params.id, createdBy: req.user._id })
       .populate('customer', 'name phone address')
       .populate('createdBy', 'name')
 

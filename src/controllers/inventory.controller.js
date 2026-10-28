@@ -3,6 +3,7 @@ const GoldRate = require('../models/GoldRate')
 const { ITEM_STATUS, ITEM_CATEGORIES } = require('../config/constants')
 const { calculateItemPrice } = require('../utils/priceCalculator')
 const { sendResponse, sendError } = require('../utils/response')
+const { itemStoreFilter } = require('../utils/itemStoreScope')
 
 const escapeRegex = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -15,11 +16,11 @@ const addItem = async (req, res, next) => {
     const defaultName = (body.category || 'Item') + (body.subCategory ? ` - ${body.subCategory}` : '')
     const requestedName = String(body.name || defaultName).trim()
 
-    const existingItem = await Item.findOne({
+    const existingItem = await Item.findOne(itemStoreFilter(req.user._id, {
       name: { $regex: `^${escapeRegex(requestedName)}$`, $options: 'i' },
       isDeleted: false,
       status: ITEM_STATUS.IN_STOCK,
-    })
+    }))
 
     if (existingItem) {
       return sendResponse(res, 200, existingItem, 'Item already exists, reusing the existing inventory item')
@@ -27,6 +28,7 @@ const addItem = async (req, res, next) => {
 
     const payload = {
       name: requestedName || defaultName,
+      storeId: req.user._id,
       category: body.category || 'Other',
       subCategory: body.subCategory,
       purity: body.purity || '22K',
@@ -53,7 +55,7 @@ const addItem = async (req, res, next) => {
 const getItems = async (req, res, next) => {
   try {
     const { category, purity, status, search, page = 1, limit = 20 } = req.query
-    const filter = { isDeleted: false }
+    const filter = itemStoreFilter(req.user._id, { isDeleted: false })
 
     if (category) filter.category = category
     if (purity)   filter.purity = purity
@@ -115,7 +117,7 @@ const getItems = async (req, res, next) => {
 // @route GET /api/v1/inventory/items/:id
 const getItemById = async (req, res, next) => {
   try {
-    const item = await Item.findById(req.params.id)
+    const item = await Item.findOne(itemStoreFilter(req.user._id, { _id: req.params.id }))
     if (!item || item.isDeleted) return sendError(res, 404, 'Item not found')
     sendResponse(res, 200, item)
   } catch (err) {
@@ -127,7 +129,11 @@ const getItemById = async (req, res, next) => {
 // @route PUT /api/v1/inventory/items/:id
 const updateItem = async (req, res, next) => {
   try {
-    const item = await Item.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true })
+    const item = await Item.findOneAndUpdate(
+      itemStoreFilter(req.user._id, { _id: req.params.id }),
+      { ...req.body, storeId: req.user._id },
+      { new: true, runValidators: true }
+    )
     if (!item) return sendError(res, 404, 'Item not found')
     sendResponse(res, 200, item, 'Item updated')
   } catch (err) {
@@ -139,7 +145,11 @@ const updateItem = async (req, res, next) => {
 // @route DELETE /api/v1/inventory/items/:id
 const deleteItem = async (req, res, next) => {
   try {
-    const item = await Item.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true })
+    const item = await Item.findOneAndUpdate(
+      itemStoreFilter(req.user._id, { _id: req.params.id }),
+      { isDeleted: true },
+      { new: true }
+    )
     if (!item) return sendError(res, 404, 'Item not found')
     sendResponse(res, 200, null, 'Item removed from inventory')
   } catch (err) {
@@ -155,32 +165,35 @@ const getItemByBarcode = async (req, res, next) => {
     console.log(`📨 Barcode lookup: ${code}`)
 
     // 1) Exact barcode match
-    let item = await Item.findOne({ barcode: code, isDeleted: false })
+    let item = await Item.findOne(itemStoreFilter(req.user._id, { barcode: code, isDeleted: false }))
 
     // 2) Exact itemCode fallback
     if (!item) {
-      item = await Item.findOne({ itemCode: code, isDeleted: false })
+      item = await Item.findOne(itemStoreFilter(req.user._id, { itemCode: code, isDeleted: false }))
     }
 
     // 3) Case-insensitive exact match on barcode or itemCode
     if (!item) {
-      item = await Item.findOne({
+      item = await Item.findOne(itemStoreFilter(req.user._id, {
         $or: [
-          { barcode: { $regex: `^${code}$`, $options: 'i' } },
-          { itemCode: { $regex: `^${code}$`, $options: 'i' } },
+          { barcode: { $regex: `^${escapeRegex(code)}$`, $options: 'i' } },
+          { itemCode: { $regex: `^${escapeRegex(code)}$`, $options: 'i' } },
         ],
         isDeleted: false,
-      })
+      }))
     }
 
     // 4) Exact name match (some clients send name instead of barcode)
     if (!item) {
-      item = await Item.findOne({ name: code, isDeleted: false })
+      item = await Item.findOne(itemStoreFilter(req.user._id, { name: code, isDeleted: false }))
     }
 
     // 5) Case-insensitive name match
     if (!item) {
-      item = await Item.findOne({ name: { $regex: `^${code}$`, $options: 'i' }, isDeleted: false })
+      item = await Item.findOne(itemStoreFilter(req.user._id, {
+        name: { $regex: `^${escapeRegex(code)}$`, $options: 'i' },
+        isDeleted: false,
+      }))
     }
 
     if (!item) {
@@ -200,7 +213,7 @@ const getItemByBarcode = async (req, res, next) => {
 const adjustStock = async (req, res, next) => {
   try {
     const { status, reason } = req.body
-    const item = await Item.findById(req.params.id)
+    const item = await Item.findOne(itemStoreFilter(req.user._id, { _id: req.params.id }))
     if (!item) return sendError(res, 404, 'Item not found')
 
     item.status = status || item.status
@@ -215,11 +228,17 @@ const adjustStock = async (req, res, next) => {
 // @route GET /api/v1/inventory/low-stock
 const getLowStock = async (req, res, next) => {
   try {
-    // Items that are in_stock but below minimumStock threshold
-    // For jewellery, each item is unique so we group by category
     const lowStock = await Item.aggregate([
-      { $match: { isDeleted: false, status: ITEM_STATUS.IN_STOCK } },
-      { $group: { _id: '$category', count: { $sum: 1 }, minimumStock: { $first: '$minimumStock' } } },
+      { $match: { storeId: req.user._id, isDeleted: false } },
+      {
+        $group: {
+          _id: '$category',
+          count: {
+            $sum: { $cond: [{ $eq: ['$status', ITEM_STATUS.IN_STOCK] }, 1, 0] },
+          },
+          minimumStock: { $max: '$minimumStock' },
+        },
+      },
       { $match: { $expr: { $lt: ['$count', '$minimumStock'] } } },
     ])
     sendResponse(res, 200, lowStock)
@@ -238,7 +257,7 @@ const getCategories = async (req, res, next) => {
 // @route POST /api/v1/inventory/items/:id/tag
 const generateTag = async (req, res, next) => {
   try {
-    const item = await Item.findById(req.params.id)
+    const item = await Item.findOne(itemStoreFilter(req.user._id, { _id: req.params.id }))
     if (!item) return sendError(res, 404, 'Item not found')
 
     const tagData = {

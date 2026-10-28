@@ -4,6 +4,7 @@ const Item = require('../models/Item')
 const JournalEntry = require('../models/JournalEntry')
 const { PURCHASE_ORDER_STATUS, ITEM_STATUS, JOURNAL_TYPES } = require('../config/constants')
 const { sendResponse, sendError } = require('../utils/response')
+const { calculatePurchaseInvoiceTotals } = require('../utils/purchaseInvoiceTotals')
 
 // ── Suppliers ─────────────────────────────────────────────
 
@@ -133,6 +134,7 @@ const receiveGoods = async (req, res, next) => {
       for (const itemData of items) {
         const item = await Item.create({
           ...itemData,
+          storeId: req.user._id,
           status: ITEM_STATUS.IN_STOCK,
           purchaseOrderRef: order._id,
           addedBy: req.user._id,
@@ -151,11 +153,22 @@ const createPurchaseInvoice = async (req, res, next) => {
     const { invoiceNumber, invoiceAmount, gstAmount } = req.body
     const order = await PurchaseOrder.findById(req.params.id)
     if (!order) return sendError(res, 404, 'Purchase order not found')
+    if (order.status === PURCHASE_ORDER_STATUS.INVOICED || order.totalInvoiceAmt !== undefined) {
+      return sendError(res, 409, 'A purchase invoice has already been recorded for this order')
+    }
+
+    let invoiceTotals
+    try {
+      invoiceTotals = calculatePurchaseInvoiceTotals(invoiceAmount, gstAmount)
+    } catch (err) {
+      if (err instanceof RangeError) return sendError(res, 400, err.message)
+      throw err
+    }
 
     order.invoiceNumber = invoiceNumber
-    order.invoiceAmount = invoiceAmount
-    order.gstAmount = gstAmount || 0
-    order.totalInvoiceAmt = invoiceAmount + (gstAmount || 0)
+    order.invoiceAmount = invoiceTotals.invoiceAmount
+    order.gstAmount = invoiceTotals.gstAmount
+    order.totalInvoiceAmt = invoiceTotals.totalInvoiceAmt
     order.balanceDue = order.totalInvoiceAmt - order.totalPaid
     order.status = PURCHASE_ORDER_STATUS.INVOICED
 
@@ -190,13 +203,23 @@ const recordPayment = async (req, res, next) => {
 
     const order = await PurchaseOrder.findById(purchaseOrderId)
     if (!order) return sendError(res, 404, 'Purchase order not found')
+    const paymentAmount = Number(amount)
+    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+      return sendError(res, 400, 'Payment amount must be a positive number')
+    }
+    if (supplierId && String(order.supplier) !== String(supplierId)) {
+      return sendError(res, 400, 'Supplier does not match the purchase order')
+    }
+    if (paymentAmount > (order.balanceDue || 0)) {
+      return sendError(res, 400, 'Payment exceeds the outstanding balance')
+    }
 
-    order.payments.push({ amount, mode, reference, paidBy: req.user._id })
-    order.totalPaid += amount
+    order.payments.push({ amount: paymentAmount, mode, reference, paidBy: req.user._id })
+    order.totalPaid += paymentAmount
     order.balanceDue = Math.max(0, order.totalInvoiceAmt - order.totalPaid)
 
     await order.save()
-    await Supplier.findByIdAndUpdate(supplierId, { $inc: { currentBalance: -amount } })
+    await Supplier.findByIdAndUpdate(order.supplier, { $inc: { currentBalance: -paymentAmount } })
 
     sendResponse(res, 200, order, 'Payment recorded')
   } catch (err) { next(err) }

@@ -129,6 +129,7 @@ const receiveWorkshopOrder = async (req, res, next) => {
     if (itemDetails) {
       newItem = await Item.create({
         ...itemDetails,
+        storeId: req.user._id,
         status: ITEM_STATUS.IN_STOCK,
         purchaseOrderRef: order._id,
         addedBy: req.user._id,
